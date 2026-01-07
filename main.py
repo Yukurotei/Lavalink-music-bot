@@ -11,15 +11,83 @@ from datetime import datetime
 
 test_server = 1005623551962918933
 
+DEVELOPERS = [
+    782448408979832892
+]
+
+def isUserDeveloper(userID: int) -> bool:
+    return userID in DEVELOPERS
+
+# ---------- JSON file helpers ----------
+
+DATA_FILES = [
+    "blacklist.json",
+    "kicklist.json",
+    "music_voice_channels.json",
+    "albums.json",
+    "unlimited_albums.json",
+]
+
+def ensure_data_files():
+    for fname in DATA_FILES:
+        if not os.path.exists(fname):
+            with open(fname, "w") as f:
+                json.dump({}, f, indent=2)
+
+ensure_data_files()
+
+ALBUMS_FILE = "albums.json"
+UNLIMITED_FILE = "unlimited_albums.json"
+
+MAX_ALBUMS_PER_USER = 3
+MAX_SONGS_PER_ALBUM = 15
+
+def load_json(path: str) -> dict:
+    if not os.path.exists(path):
+        with open(path, "w") as f:
+            json.dump({}, f, indent=2)
+        return {}
+    with open(path, "r") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+
+def save_json(path: str, data: dict):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+def load_albums() -> dict:
+    return load_json(ALBUMS_FILE)
+
+def save_albums(data: dict):
+    save_json(ALBUMS_FILE, data)
+
+def load_unlimited_users() -> list[int]:
+    data = load_json(UNLIMITED_FILE)
+    # stored as {"user_ids": [int, int, ...]}
+    raw = data.get("user_ids", [])
+    return [int(x) for x in raw]
+
+def save_unlimited_users(user_ids: list[int]):
+    data = {"user_ids": list(map(int, user_ids))}
+    save_json(UNLIMITED_FILE, data)
+
+UNLIMITED_ALBUM_USERS: list[int] = load_unlimited_users()
+
+def user_has_unlimited(user_id: int) -> bool:
+    return int(user_id) in UNLIMITED_ALBUM_USERS
+
+
 @tasks.loop(seconds=5)
 async def dashboard_updater():
     for guild in client.guilds:
         player: pomice.Player = guild.voice_client
         if not player:
             continue
-
         if player.is_connected and player.is_playing:
             await update_dashboard(player)
+
 
 class discordClient(commands.Bot):
     def __init__(self):
@@ -27,20 +95,21 @@ class discordClient(commands.Bot):
         self.synced = False
         self.database_synced = False
         self.pomice = pomice.NodePool()
-    
+
     async def on_ready(self):
         await self.wait_until_ready()
         if not self.synced:
             await tree.sync()
             self.synced = True
             print("Command tree synced")
+
         if not self.database_synced:
             self.database_synced = True
             print("Database Initialized")
+
         if not dashboard_updater.is_running():
             dashboard_updater.start()
 
-        
         # Create Pomice node
         await self.pomice.create_node(
             bot=self,
@@ -49,8 +118,9 @@ class discordClient(commands.Bot):
             password='youshallnotpass',
             identifier='MAIN'
         )
+
         print(f"Pomice node created")
-        
+
         await self.change_presence(activity=discord.Game(name="/help"))
         print(f"{self.user}: Initialized")
 
@@ -61,7 +131,6 @@ class discordClient(commands.Bot):
                 await player.channel.edit(status=status)
             except Exception as e:
                 print(f"Failed to edit channel status: {e}")
-        
         add_activity(player, f"▶️ Now playing: **{track.title}**")
         await update_dashboard(player)
 
@@ -70,10 +139,8 @@ class discordClient(commands.Bot):
             player.custom_queue = []
         if not hasattr(player, 'loop'):
             player.loop = False
-
         if player.loop:
             return await player.play(track)
-        
         if not player.custom_queue:
             if player.channel:
                 try:
@@ -83,13 +150,16 @@ class discordClient(commands.Bot):
             add_activity(player, "⏹️ Playback finished.")
             await update_dashboard(player)
             return
-        
         next_song = player.custom_queue.pop(0)
         await player.play(next_song)
 
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         with open('kicklist.json', 'r') as f1:
-            kick_data = json.load(f1)
+            try:
+                kick_data = json.load(f1)
+            except json.JSONDecodeError:
+                kick_data = {}
+
         if not member.bot:
             if not before.channel and after.channel:
                 if str(after.channel.id) in kick_data:
@@ -101,10 +171,15 @@ class discordClient(commands.Bot):
                 if not before.channel.members:
                     if str(before.channel.id) in kick_data:
                         del kick_data[str(before.channel.id)]
-                        with open('kicklist.json', 'w') as f1:
-                            json.dump(kick_data, f1)
+                    with open('kicklist.json', 'w') as f1:
+                        json.dump(kick_data, f1, indent=2)
+
         with open('music_voice_channels.json', 'r') as f:
-            data = json.load(f)
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = {}
+
         if not member.bot:
             if not before.channel and after.channel:
                 if str(member.guild.id) in data:
@@ -123,12 +198,12 @@ class discordClient(commands.Bot):
                             else:
                                 vc = await member.guild.create_voice_channel(f"{member.name}'s VC")
                                 return await member.move_to(vc)
-                else:
-                    return
-                channel = discord.utils.get(member.guild.channels, name=f"{member.name}'s VC")
-                if not channel is None:
-                    if after.channel.id != channel.id:
-                        await channel.delete()
+                        else:
+                            return
+                    channel = discord.utils.get(member.guild.channels, name=f"{member.name}'s VC")
+                    if not channel is None:
+                        if after.channel.id != channel.id:
+                            await channel.delete()
             elif before.channel and not after.channel:
                 channel = discord.utils.get(member.guild.channels, name=f"{member.name}'s VC")
                 if not channel is None:
@@ -136,22 +211,29 @@ class discordClient(commands.Bot):
 
     async def on_guild_remove(self, guild):
         with open('blacklist.json', 'r') as f:
-            data = json.load(f)
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = {}
         try:
             del data[str(guild.id)]
             with open('blacklist.json', 'w') as f:
-                json.dump(data, f)
+                json.dump(data, f, indent=2)
         except:
             pass
 
         with open('music_voice_channels.json', 'r') as f:
-            data = json.load(f)
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = {}
         try:
             del data[str(guild.id)]
             with open('music_voice_channels.json', 'w') as f:
-                json.dump(data, f)
+                json.dump(data, f, indent=2)
         except:
             pass
+
 
 client = discordClient()
 #tree = app_commands.CommandTree(client)
@@ -161,19 +243,18 @@ os.chdir(os.getcwd())
 
 NOARTWORK = "https://img.freepik.com/premium-vector/free-vector-youtube-icon-logo-social-media-logo_901408-454.jpg?w=740"
 
+
 def add_activity(player: pomice.Player, text: str):
     """Add an activity to the player's recent activities log"""
     if not hasattr(player, 'recent_activities'):
         player.recent_activities = deque(maxlen=10)
-    
     timestamp = datetime.now().strftime("%H:%M:%S")
     activity_entry = f"`{timestamp}` {text}"
-    
     # Limit each activity entry to 100 characters
     if len(activity_entry) > 100:
         activity_entry = activity_entry[:97] + "..."
-    
     player.recent_activities.appendleft(activity_entry)
+
 
 def truncate_text(text: str, max_length: int) -> str:
     """Truncate text to a maximum length"""
@@ -181,11 +262,11 @@ def truncate_text(text: str, max_length: int) -> str:
         return text[:max_length - 3] + "..."
     return text
 
+
 async def ensure_dashboard_channel(player: pomice.Player):
     """Ensure the dashboard channel and message are still valid, recreate if needed"""
     if not hasattr(player, 'dashboard_channel_id') or not hasattr(player, 'dashboard_message_id'):
         return False
-    
     try:
         channel = await client.fetch_channel(player.dashboard_channel_id)
         message = await channel.fetch_message(player.dashboard_message_id)
@@ -196,6 +277,7 @@ async def ensure_dashboard_channel(player: pomice.Player):
         player.dashboard_channel_id = None
         player.dashboard_message_id = None
         return False
+
 
 async def update_dashboard(player: pomice.Player, force_new=False):
     """Update or create the centralized music dashboard"""
@@ -219,23 +301,19 @@ async def update_dashboard(player: pomice.Player, force_new=False):
         duration = await convert(int(track.length), auto_format=False)
         position = await convert(int(player.position), auto_format=False)
         requester = getattr(player, 'current_requester', 'Unknown')
-
         track_title = truncate_text(track.title, 80)
         track_author = truncate_text(track.author or "Unknown", 50)
-
         status_title = (
             "⏸️ Now Paused"
             if player.is_paused
             else "▶️ Now Playing"
         )
-
         now_playing_text = (
             f"**{track_title}**\n"
             f"🎤 Artist: {track_author}\n"
             f"⏱️ Duration: `{position}` / `{duration}`\n"
             f"👤 Requested by: {truncate_text(requester, 30)}"
         )
-
         embed.add_field(
             name=status_title,
             value=now_playing_text,
@@ -259,7 +337,6 @@ async def update_dashboard(player: pomice.Player, force_new=False):
             queue_text += f"`{i+1}.` **{truncated_title}**\n"
         if len(player.custom_queue) > 3:
             queue_text += f"\n*...and {len(player.custom_queue) - 3} more*"
-        
         # Limit queue section to 1000 characters
         queue_text = truncate_text(queue_text, 1000)
         embed.add_field(name="📋 Up Next", value=queue_text, inline=False)
@@ -271,7 +348,6 @@ async def update_dashboard(player: pomice.Player, force_new=False):
         # Take up to 8 activities and ensure total doesn't exceed 1024 chars
         activities_list = list(player.recent_activities)[:8]
         activity_text = "\n".join(activities_list)
-        
         # Limit activities section to 1024 characters (Discord field limit)
         activity_text = truncate_text(activity_text, 1024)
         embed.add_field(name="📜 Recent Activity", value=activity_text, inline=False)
@@ -291,7 +367,7 @@ async def update_dashboard(player: pomice.Player, force_new=False):
                     channel = player.interaction.channel if hasattr(player, 'interaction') else None
             else:
                 channel = player.interaction.channel if hasattr(player, 'interaction') else None
-            
+
             if channel:
                 # Delete old dashboard if it exists
                 if hasattr(player, 'dashboard_message') and player.dashboard_message:
@@ -299,7 +375,7 @@ async def update_dashboard(player: pomice.Player, force_new=False):
                         await player.dashboard_message.delete()
                     except:
                         pass
-                
+
                 player.dashboard_message = await channel.send(embed=embed)
                 player.dashboard_channel_id = channel.id
                 player.dashboard_message_id = player.dashboard_message.id
@@ -309,24 +385,24 @@ async def update_dashboard(player: pomice.Player, force_new=False):
                 await player.dashboard_message.edit(embed=embed)
             except discord.errors.NotFound:
                 await update_dashboard(player, force_new=True)
-            except Exception as e:
-                print(f"Error updating dashboard: {e}")
-                await update_dashboard(player, force_new=True)
     except Exception as e:
         print(f"Failed to create/update dashboard: {e}")
 
-async def simple_embed(content: str, color: discord.Color=discord.Color.red()):
+
+async def simple_embed(content: str, color: discord.Color = discord.Color.red()):
     embed = discord.Embed(title=None, description=content, color=color)
     return embed
 
-async def comp_embed(title: str, description: str, color: discord.Color=discord.Color.red(), author_name: str=None, author_avatar_url: str=None, footer: str=None):
+
+async def comp_embed(title: str, description: str, color: discord.Color = discord.Color.red(),
+                     author_name: str = None, author_avatar_url: str = None, footer: str = None):
     embed = discord.Embed(title=title, description=description, color=color)
     if author_name is not None and author_avatar_url is not None:
         embed.set_author(name=author_name, icon_url=author_avatar_url)
     if footer is not None:
         embed.set_footer(text=footer)
-    
     return embed
+
 
 async def convert(milliseconds: int, auto_format=False):
     """Convert milliseconds to hours, minutes and seconds"""
@@ -340,41 +416,86 @@ async def convert(milliseconds: int, auto_format=False):
         final = converted
     return final
 
+
 async def isQueueEmpty(player: pomice.Player):
     if not hasattr(player, 'custom_queue'):
         return True
     return not player.custom_queue
 
+
 @tree.command(name="help", description="Shows help")
 @app_commands.describe(command="The command to show help")
-async def help_command(interaction: discord.Interaction, command: str=None):
-    if command is None:
-        embed = await comp_embed("Commands", description="List of commands you can use", author_name=client.user.display_name, author_avatar_url=client.user.display_avatar.url)
-        for cmd in tree.get_commands():
-            embed.add_field(name=f"/{cmd.name}", value=cmd.description, inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    else:
+async def help_command(interaction: discord.Interaction, command: str = None):
+    if command is not None:
         cmd_for_help = tree.get_command(command)
         if cmd_for_help is None:
-            return await interaction.response.send_message(f"No command called {command} found", ephemeral=True)
-        embed = await comp_embed(f"Help for {cmd_for_help.name}", description=f"{cmd_for_help.description}", author_name=client.user.display_name, author_avatar_url=client.user.display_avatar.url)
-        parm_str = ""
-        for parm in cmd_for_help.parameters:
-            parm_str = parm_str + f"{parm.name}: {parm.description}\n"
-        embed.add_field(name="Parameters", value=parm_str)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            return await interaction.response.send_message(
+                f"No command called `{command}` found.",
+                ephemeral=True
+            )
+
+        embed = await comp_embed(
+            f"Help for /{cmd_for_help.name}",
+            description=cmd_for_help.description or "No description.",
+            author_name=client.user.display_name,
+            author_avatar_url=client.user.display_avatar.url
+        )
+
+        if cmd_for_help.parameters:
+            param_lines = []
+            for parm in cmd_for_help.parameters:
+                desc = parm.description or "No description."
+                param_lines.append(f"`{parm.name}` – {desc}")
+            embed.add_field(
+                name="Parameters",
+                value="\n".join(param_lines)[:1024],
+                inline=False
+            )
+
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    commands_list = tree.get_commands()
+    commands_list = sorted(commands_list, key=lambda c: c.name.lower())
+
+    embed = await comp_embed(
+        "Commands",
+        description="List of available commands.\nUse `/help command:<name>` for more details.",
+        author_name=client.user.display_name,
+        author_avatar_url=client.user.display_avatar.url
+    )
+
+
+    chunk_size = 8
+    for i in range(0, len(commands_list), chunk_size):
+        chunk = commands_list[i:i + chunk_size]
+        lines = []
+        for cmd in chunk:
+            desc = cmd.description or "No description."
+            lines.append(f"/{cmd.name} – {desc}")
+        field_name = f"Commands {i+1}-{i+len(chunk)}"
+        embed.add_field(
+            name=field_name,
+            value="\n".join(lines)[:1024],
+            inline=False
+        )
+    
+        if len(embed.fields) >= 25:
+            break
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 
 @tree.command(name="join", description="Joins the current voice channel you are in or a specific voice channel")
 @app_commands.describe(channel="The channel to join")
-async def join_command(interaction: discord.Interaction, channel: discord.VoiceChannel=None):
+async def join_command(interaction: discord.Interaction, channel: discord.VoiceChannel = None):
     if channel is None:
         if not interaction.user.voice is None:
             channel = interaction.user.voice.channel
         else:
             return await interaction.response.send_message("You are not in a voice channel!", ephemeral=True)
-    
-    player = interaction.guild.voice_client
 
+    player = interaction.guild.voice_client
     if player is not None:
         if player.is_connected:
             return await interaction.response.send_message("Bot is already in a voice channel! Use /fuckoff to disconnect me!", ephemeral=True)
@@ -386,20 +507,24 @@ async def join_command(interaction: discord.Interaction, channel: discord.VoiceC
     player.dashboard_channel_id = interaction.channel.id
     player.recent_activities = deque(maxlen=10)
     player.interaction = interaction
-
     await interaction.guild.change_voice_state(channel=channel, self_deaf=True)
-    
     add_activity(player, f"✅ Bot joined **{channel.name}**")
     await update_dashboard(player, force_new=True)
+
     try:
         await interaction.response.send_message(f"✅ Connected to `{channel.name}` - Dashboard created!", ephemeral=True)
     except:
         pass
 
+
 @tree.command(name="fuckoff", description="Leaves the channel that the bot is in (disconnect)")
 async def leave_command(interaction: discord.Interaction):
     with open('blacklist.json', 'r') as f:
+        try:
             data = json.load(f)
+        except json.JSONDecodeError:
+            data = {}
+
     if str(interaction.guild.id) in data:
         if str(interaction.user.id) in data[str(interaction.guild.id)]:
             blacklisted = True
@@ -407,30 +532,32 @@ async def leave_command(interaction: discord.Interaction):
             blacklisted = False
     else:
         blacklisted = False
-    
-    player = interaction.guild.voice_client
 
+    player = interaction.guild.voice_client
     if player is None:
         return await interaction.response.send_message("bot is not connected to any voice channel", ephemeral=True)
-    
+
     if player.is_playing:
         return await interaction.response.send_message("Bot is playing a song! Use `/clear` to stop the music and clear the queue", ephemeral=True)
+
     if blacklisted:
         return await interaction.response.send_message(f"You are blacklisted in `{interaction.guild.name}`! So you can't let the bot leave the voice channel!", ephemeral=True)
-    
+
     if hasattr(player, 'dashboard_message') and player.dashboard_message:
         try:
             await player.dashboard_message.delete()
         except discord.errors.NotFound:
             pass
-            
+
     if player.channel:
         try:
             await player.channel.edit(status=None)
         except Exception as e:
             print(f"Failed to clear channel status on disconnect: {e}")
+
     await player.disconnect()
     await interaction.response.send_message(embed=await simple_embed("Disconnected"), ephemeral=True)
+
 
 @tree.command(name="play", description="Play a song")
 @app_commands.describe(search="The thing to search for")
@@ -438,24 +565,24 @@ async def play_command(interaction: discord.Interaction, search: str):
     try:
         if not interaction.user.voice:
             return await interaction.response.send_message("Join a voice channel first!", ephemeral=True)
-        
+
         await interaction.response.defer(ephemeral=True)
 
         player: pomice.Player = interaction.guild.voice_client
+
         if not player:
             player_check = interaction.guild.voice_client
-
             if player_check is not None:
                 if player_check.is_connected:
                     return await interaction.followup.send("Bot is already in a voice channel! Use /fuckoff to disconnect me!", ephemeral=True)
-            
+
             player = await interaction.user.voice.channel.connect(cls=pomice.Player)
             player.custom_queue = []
             player.loop = False
             player.dashboard_channel_id = interaction.channel.id
             player.recent_activities = deque(maxlen=10)
             await interaction.guild.change_voice_state(channel=interaction.user.voice.channel, self_deaf=True)
-        
+
         results = await player.get_tracks(search)
         if not results:
             return await interaction.followup.send(f"No songs found for `{search}`.", ephemeral=True)
@@ -464,14 +591,14 @@ async def play_command(interaction: discord.Interaction, search: str):
             song = results.tracks[0]
         else:
             song = results[0]
-        
+
         if not hasattr(player, 'custom_queue'):
             player.custom_queue = []
             player.loop = False
             player.recent_activities = deque(maxlen=10)
 
         requester_name = interaction.user.display_name
-        
+
         if not player.is_playing and not player.custom_queue:
             await player.play(song)
             player.current_requester = requester_name
@@ -481,7 +608,7 @@ async def play_command(interaction: discord.Interaction, search: str):
             player.custom_queue.append(song)
             add_activity(player, f"➕ **{interaction.user.display_name}** queued **{truncate_text(song.title, 40)}**")
             response = f"➕ Added to queue: **{truncate_text(song.title, 60)}**"
-        
+
         player.interaction = interaction
         await update_dashboard(player)
         await interaction.followup.send(response, ephemeral=True)
@@ -491,11 +618,16 @@ async def play_command(interaction: discord.Interaction, search: str):
         except:
             print(f"Error in play command: {e}")
 
+
 @tree.command(name="clear", description="Stop the current song and clear the queue")
 async def clear_command(interaction: discord.Interaction):
     try:
         with open('blacklist.json', 'r') as f:
-            data = json.load(f)
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = {}
+
         if str(interaction.guild.id) in data:
             if str(interaction.user.id) in data[str(interaction.guild.id)]:
                 blacklisted = True
@@ -503,12 +635,12 @@ async def clear_command(interaction: discord.Interaction):
                 blacklisted = False
         else:
             blacklisted = False
+
         if not blacklisted:
             player = interaction.guild.voice_client
-
             if player is None:
                 return await interaction.response.send_message("Bot is not connected to any voice channel", ephemeral=True)
-            
+
             if player.is_playing:
                 if not player.loop:
                     if player.custom_queue:
@@ -529,10 +661,15 @@ async def clear_command(interaction: discord.Interaction):
         except:
             print(f"Error in clear command: {e}")
 
+
 @tree.command(name="stop", description="Pause the current song")
 async def pause_command(interaction: discord.Interaction):
     with open('blacklist.json', 'r') as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            data = {}
+
     if str(interaction.guild.id) in data:
         if str(interaction.user.id) in data[str(interaction.guild.id)]:
             blacklisted = True
@@ -540,14 +677,14 @@ async def pause_command(interaction: discord.Interaction):
             blacklisted = False
     else:
         blacklisted = False
+
     if blacklisted:
         return await interaction.response.send_message(f"You are blacklisted in {interaction.guild.name}! You can't pause a song!", ephemeral=True)
-    
-    player = interaction.guild.voice_client
 
+    player = interaction.guild.voice_client
     if player is None:
         return await interaction.response.send_message("Bot is not connected to any voice channel", ephemeral=True)
-    
+
     if not player.is_paused:
         if player.is_playing:
             await player.set_pause(True)
@@ -559,10 +696,15 @@ async def pause_command(interaction: discord.Interaction):
     else:
         return await interaction.response.send_message("Playback is already paused", ephemeral=True)
 
+
 @tree.command(name="resume", description="Resume the currently paused song")
 async def resume_command(interaction: discord.Interaction):
     with open('blacklist.json', 'r') as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            data = {}
+
     if str(interaction.guild.id) in data:
         if str(interaction.user.id) in data[str(interaction.guild.id)]:
             blacklisted = True
@@ -570,14 +712,14 @@ async def resume_command(interaction: discord.Interaction):
             blacklisted = False
     else:
         blacklisted = False
+
     if blacklisted:
         return await interaction.response.send_message(f"You are blacklisted in {interaction.guild.name}! You can't resume a song!", ephemeral=True)
-    
-    player = interaction.guild.voice_client
 
+    player = interaction.guild.voice_client
     if player is None:
         return await interaction.response.send_message("bot is not connected to any voice channel", ephemeral=True)
-    
+
     if player.is_paused:
         await player.set_pause(False)
         add_activity(player, f"▶️ **{interaction.user.display_name}** resumed playback")
@@ -586,11 +728,16 @@ async def resume_command(interaction: discord.Interaction):
     else:
         return await interaction.response.send_message("playback is not paused", ephemeral=True)
 
+
 @tree.command(name="volume", description="Changes the volume")
 @app_commands.describe(to="The volume to adjust to (between 1 and 100)")
 async def volume_command(interaction: discord.Interaction, to: int):
     with open('blacklist.json', 'r') as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            data = {}
+
     if str(interaction.guild.id) in data:
         if str(interaction.user.id) in data[str(interaction.guild.id)]:
             blacklisted = True
@@ -598,26 +745,31 @@ async def volume_command(interaction: discord.Interaction, to: int):
             blacklisted = False
     else:
         blacklisted = False
+
     if blacklisted:
         return await interaction.response.send_message(f"You are blacklisted in {interaction.guild.name}! You can't change the volume!", ephemeral=True)
+
     if not interaction.guild.voice_client:
         return await interaction.response.send_message("I am not even in a voice channel!", ephemeral=True)
-    if to > 100:
-        return await interaction.response.send_message("Volume should be between 1 and 100", ephemeral=True)
-    elif to < 1:
-        return await interaction.response.send_message("Volume should be between 1 and 100", ephemeral=True)
-    
-    player = interaction.guild.voice_client
 
+    if to > 100 or to < 1:
+        return await interaction.response.send_message("Volume should be between 1 and 100", ephemeral=True)
+
+    player = interaction.guild.voice_client
     await player.set_volume(to)
     add_activity(player, f"🔊 **{interaction.user.display_name}** set volume to **{to}%**")
     await update_dashboard(player)
     await interaction.response.send_message(f"🔊 Volume set to {to}%", ephemeral=True)
 
+
 @tree.command(name="loop", description="Toggle looping the current song")
 async def loop_command(interaction: discord.Interaction):
     with open('blacklist.json', 'r') as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            data = {}
+
     if str(interaction.guild.id) in data:
         if str(interaction.user.id) in data[str(interaction.guild.id)]:
             blacklisted = True
@@ -625,28 +777,28 @@ async def loop_command(interaction: discord.Interaction):
             blacklisted = False
     else:
         blacklisted = False
+
     if blacklisted:
         return await interaction.response.send_message(f"You are blacklisted in {interaction.guild.name}! You can't loop a song!", ephemeral=True)
+
     if not interaction.guild.voice_client:
         return await interaction.response.send_message("I am not in a voice channel!", ephemeral=True)
     elif not interaction.user.voice:
         return await interaction.response.send_message("You are not in a voice channel!", ephemeral=True)
     else:
         player: pomice.Player = interaction.guild.voice_client
-    
-    if not hasattr(player, 'loop'):
-        player.loop = False
-    
-    player.loop = not player.loop
-    
-    if player.loop:
-        add_activity(player, f"🔁 **{interaction.user.display_name}** enabled loop")
-        await update_dashboard(player)
-        return await interaction.response.send_message("🔁 Loop enabled", ephemeral=True)
-    else:
-        add_activity(player, f"➡️ **{interaction.user.display_name}** disabled loop")
-        await update_dashboard(player)
-        return await interaction.response.send_message("➡️ Loop disabled", ephemeral=True)
+        if not hasattr(player, 'loop'):
+            player.loop = False
+        player.loop = not player.loop
+        if player.loop:
+            add_activity(player, f"🔁 **{interaction.user.display_name}** enabled loop")
+            await update_dashboard(player)
+            return await interaction.response.send_message("🔁 Loop enabled", ephemeral=True)
+        else:
+            add_activity(player, f"➡️ **{interaction.user.display_name}** disabled loop")
+            await update_dashboard(player)
+            return await interaction.response.send_message("➡️ Loop disabled", ephemeral=True)
+
 
 @tree.command(name="queue", description="Check the queue")
 async def queue_command(interaction: discord.Interaction):
@@ -656,24 +808,28 @@ async def queue_command(interaction: discord.Interaction):
         return await interaction.response.send_message("You are not in a voice channel!", ephemeral=True)
     else:
         player: pomice.Player = interaction.guild.voice_client
+        if await isQueueEmpty(player):
+            return await interaction.response.send_message("Queue is empty", ephemeral=True)
 
-    if await isQueueEmpty(player):
-        return await interaction.response.send_message("Queue is empty", ephemeral=True)
-    
-    embed = discord.Embed(title="Queue", description=f"Current song: {player.current.title}", color=discord.Color.blue())
-    queue = player.custom_queue
-    song_count = 0
-    for song in queue:
-        song_count += 1
-        embed.add_field(name=f"Song {song_count}", value=f"`{truncate_text(song.title, 80)}`", inline=False)
+        embed = discord.Embed(title="Queue", description=f"Current song: {player.current.title}",
+                              color=discord.Color.blue())
+        queue = player.custom_queue
+        song_count = 0
+        for song in queue:
+            song_count += 1
+            embed.add_field(name=f"Song {song_count}", value=f"`{truncate_text(song.title, 80)}`", inline=False)
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    return await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="removesonginqueue", description="Removes a song in the queue")
 @app_commands.describe(position="The position of the song in the queue")
 async def removeSongInQueue_command(interaction: discord.Interaction, position: int):
     with open('blacklist.json', 'r') as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            data = {}
+
     if str(interaction.guild.id) in data:
         if str(interaction.user.id) in data[str(interaction.guild.id)]:
             blacklisted = True
@@ -681,6 +837,7 @@ async def removeSongInQueue_command(interaction: discord.Interaction, position: 
             blacklisted = False
     else:
         blacklisted = False
+
     if blacklisted:
         return await interaction.response.send_message(f"You are blacklisted in {interaction.guild.name}! You can't remove a song in queue!", ephemeral=True)
 
@@ -690,30 +847,27 @@ async def removeSongInQueue_command(interaction: discord.Interaction, position: 
         return await interaction.response.send_message("You are not in a voice channel!", ephemeral=True)
     else:
         player: pomice.Player = interaction.guild.voice_client
+        if await isQueueEmpty(player):
+            return await interaction.response.send_message("Queue is empty", ephemeral=True)
 
-    if await isQueueEmpty(player):
-        return await interaction.response.send_message("Queue is empty", ephemeral=True)
+        if position < 1 or position > len(player.custom_queue):
+            return await interaction.response.send_message(f"Invalid position. The queue has {len(player.custom_queue)} songs.", ephemeral=True)
 
-    if position < 1 or position > len(player.custom_queue):
-        return await interaction.response.send_message(f"Invalid position. The queue has {len(player.custom_queue)} songs.", ephemeral=True)
+        removed_song = player.custom_queue.pop(position - 1)
+        add_activity(player, f"❌ **{interaction.user.display_name}** removed **{truncate_text(removed_song.title, 40)}**")
+        await update_dashboard(player)
+        await interaction.response.send_message(f"❌ Removed `{truncate_text(removed_song.title, 60)}` from queue", ephemeral=True)
 
-    removed_song = player.custom_queue.pop(position - 1)
-    add_activity(player, f"❌ **{interaction.user.display_name}** removed **{truncate_text(removed_song.title, 40)}**")
-    await update_dashboard(player)
-    await interaction.response.send_message(f"❌ Removed `{truncate_text(removed_song.title, 60)}` from queue", ephemeral=True)
 
 @tree.command(name="nowplaying", description="Check the song that is currently playing")
 async def nowplaying_command(interaction: discord.Interaction):
     player = interaction.guild.voice_client
-
     if player is None:
         return await interaction.response.send_message("Bot is not connected to any voice channel", ephemeral=True)
-    
     if player.is_playing:
         track = player.current
         requester = getattr(player, 'current_requester', 'Unknown')
         duration = await convert(int(track.length), auto_format=False)
-        
         embed = discord.Embed(
             title=f"🎵 Now Playing",
             description=f"**{truncate_text(track.title, 100)}**",
@@ -722,16 +876,18 @@ async def nowplaying_command(interaction: discord.Interaction):
         embed.add_field(name="🎤 Artist", value=truncate_text(track.author or "Unknown", 50), inline=True)
         embed.add_field(name="⏱️ Duration", value=f"`{duration}`", inline=True)
         embed.add_field(name="👤 Requested by", value=truncate_text(requester, 30), inline=True)
+
         if hasattr(track, 'uri') and track.uri:
             embed.add_field(name="🔗 Link", value=track.uri, inline=False)
         if hasattr(track, 'artwork_url') and track.artwork_url:
             embed.set_thumbnail(url=track.artwork_url)
         else:
             embed.set_thumbnail(url=NOARTWORK)
-        
+
         return await interaction.response.send_message(embed=embed, ephemeral=True)
     else:
         await interaction.response.send_message("Nothing is playing right now", ephemeral=True)
+
 
 @client.tree.command(name="search", description="Search a song with the query provided")
 @app_commands.describe(search="The query to search for")
@@ -823,7 +979,6 @@ async def search_command(interaction: discord.Interaction, search: str):
 
     view = SearchView()
     message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
     await view.wait()
 
     if view.choice is None:
@@ -846,14 +1001,20 @@ async def search_command(interaction: discord.Interaction, search: str):
         await message.delete()
     except:
         pass
+
     player.interaction = interaction
     await update_dashboard(player)
     await interaction.followup.send(response, ephemeral=True)
 
+
 @tree.command(name="skip", description="skip the current song")
 async def skip_command(interaction: discord.Interaction):
     with open('blacklist.json', 'r') as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            data = {}
+
     if str(interaction.guild.id) in data:
         if str(interaction.user.id) in data[str(interaction.guild.id)]:
             blacklisted = True
@@ -861,22 +1022,23 @@ async def skip_command(interaction: discord.Interaction):
             blacklisted = False
     else:
         blacklisted = False
-    
-    player = interaction.guild.voice_client
 
+    player = interaction.guild.voice_client
     if player is None:
         return await interaction.response.send_message("Bot is not connected to any voice channel", ephemeral=True)
-    
+
     if blacklisted:
         return await interaction.response.send_message(f"You are blacklisted in {interaction.guild.name}! You can't skip a song!", ephemeral=True)
-    
+
     maximum_skip_threshold = 3
     if maximum_skip_threshold > 10:
         return await interaction.followup.send("Please notify the developers about this error\nE: maximum_skip_threshold should not be greater than 10", ephemeral=True)
+
     if player.is_playing:
         member_count = len(player.channel.members)
         if member_count - 1 >= maximum_skip_threshold:
             await interaction.response.defer(thinking=True)
+
             class skipView(discord.ui.View):
                 def __init__(self, channel: discord.VoiceChannel, embed: discord.Embed):
                     super().__init__(timeout=30)
@@ -894,23 +1056,25 @@ async def skip_command(interaction: discord.Interaction):
                     except discord.errors.NotFound:
                         pass
                     self.stop()
-                
+
                 @discord.ui.button(label="skip", style=discord.ButtonStyle.red, custom_id="skip_button")
                 async def skip_button(self, interaction_: discord.Interaction, button: discord.ui.Button):
                     if interaction_.user.voice.channel == self.channel:
                         for voted_user in self.voted:
                             if voted_user == interaction_.user.id:
                                 return await interaction_.response.send_message("You already voted!", ephemeral=True)
+
                         skip_vote = int(self.embed.footer.text.split(": ")[1].split("/")[0])
                         skip_vote += 1
+
                         if skip_vote >= maximum_skip_threshold:
                             self.completed = True
                             await player.stop()
                             add_activity(player, f"⏭️ Vote skip succeeded ({skip_vote}/{maximum_skip_threshold})")
                             await update_dashboard(player)
                             try:
-                                await interaction.edit_original_response(content=f"⏭️ Skipped by vote ({skip_vote}/{maximum_skip_threshold})", embed=None, view=None)
-                                await interaction_.response.send_message("Voted!", ephemeral=True)
+                                await interaction.delete_original_response()
+                                await interaction_.response.send_message(f"⏭️ Skipped by vote ({skip_vote}/{maximum_skip_threshold})", ephemeral=True)
                             except discord.errors.NotFound:
                                 await interaction_.response.send_message("Voted! Song skipped.", ephemeral=True)
                             self.stop()
@@ -933,15 +1097,20 @@ async def skip_command(interaction: discord.Interaction):
             await player.stop()
             add_activity(player, f"⏭️ **{interaction.user.display_name}** skipped the song")
             await update_dashboard(player)
-            return await interaction.followup.send("⏭️ Song skipped", ephemeral=True)
+            return await interaction.response.send_message("⏭️ Song skipped", ephemeral=True)
     else:
         return await interaction.followup.send("Nothing is playing", ephemeral=True)
-    
+
+
 @tree.command(name="votekick", description="Start a vote to kick a specific member from the current voice chat until the music session ends")
 @app_commands.describe(member="The member to start a vote")
 async def votekick_command(interaction: discord.Interaction, member: discord.Member):
     with open('blacklist.json', 'r') as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            data = {}
+
     if str(interaction.guild.id) in data:
         if str(interaction.user.id) in data[str(interaction.guild.id)]:
             blacklisted = True
@@ -949,20 +1118,21 @@ async def votekick_command(interaction: discord.Interaction, member: discord.Mem
             blacklisted = False
     else:
         blacklisted = False
-    
-    player = interaction.guild.voice_client
 
+    player = interaction.guild.voice_client
     if player is None:
         return await interaction.response.send_message("Bot is not connected to any voice channel", ephemeral=True)
-    
+
     if blacklisted:
         return await interaction.response.send_message(f"You are blacklisted in {interaction.guild.name}! You can't vote kick!", ephemeral=True)
-    
+
     if member == interaction.user:
         return await interaction.response.send_message(f"You can't vote kick yourself!", ephemeral=True)
+
     maximum_vote_threshold = 3
     if maximum_vote_threshold > 10:
         return await interaction.response.send_message("Please notify the developers about this error\nE: maximum_vote_threshold should not be greater than 10", ephemeral=True)
+
     member_count = len(player.channel.members)
     if member_count - 1 >= maximum_vote_threshold:
         class voteView(discord.ui.View):
@@ -982,19 +1152,25 @@ async def votekick_command(interaction: discord.Interaction, member: discord.Mem
                 except discord.errors.NotFound:
                     pass
                 self.stop()
-            
+
             @discord.ui.button(label="vote", style=discord.ButtonStyle.red, custom_id="vote_button")
             async def vote_button(self, interaction_: discord.Interaction, button: discord.ui.Button):
                 if interaction_.user.voice.channel == self.channel:
                     for voted_user in self.voted:
                         if voted_user == interaction_.user.id:
                             return await interaction_.response.send_message("You already voted!", ephemeral=True)
+
                     kick_vote = int(self.embed.footer.text.split(": ")[1].split("/")[0])
                     kick_vote += 1
+
                     if kick_vote >= maximum_vote_threshold:
                         self.completed = True
                         with open('kicklist.json', 'r') as f1:
-                            kick_data = json.load(f1)
+                            try:
+                                kick_data = json.load(f1)
+                            except json.JSONDecodeError:
+                                kick_data = {}
+
                         if str(player.channel.id) in kick_data:
                             if str(member.id) in kick_data[str(player.channel.id)]:
                                 pass
@@ -1006,9 +1182,10 @@ async def votekick_command(interaction: discord.Interaction, member: discord.Mem
                             kicked_list = []
                             kicked_list.append(str(member.id))
                             kick_data[str(player.channel.id)] = kicked_list
-                        
+
                         with open('kicklist.json', 'w') as f1:
-                            json.dump(kick_data, f1)
+                            json.dump(kick_data, f1, indent=2)
+
                         await member.move_to(None)
                         add_activity(player, f"👢 **{member.display_name}** was vote-kicked")
                         await update_dashboard(player)
@@ -1036,6 +1213,7 @@ async def votekick_command(interaction: discord.Interaction, member: discord.Mem
     else:
         return await interaction.response.send_message(f"You can't vote kick because the member count is not {maximum_vote_threshold} in your current voice channel!", ephemeral=True)
 
+
 #!!!!!!!!!!!!!!!!!!!#
 #!Function commands!#
 #!!!!!!!!!!!!!!!!!!!#
@@ -1044,101 +1222,383 @@ async def votekick_command(interaction: discord.Interaction, member: discord.Mem
 @app_commands.checks.has_permissions(manage_messages=True)
 @app_commands.describe(member="The member to blacklist")
 async def blacklist(interaction: discord.Interaction, member: discord.Member):
-  if not member.id == interaction.user.id:
-    with open("blacklist.json", 'r') as f:
-      blacklist_data = json.load(f)
-    if str(interaction.guild.id) in blacklist_data:
-      if not str(member.id) in blacklist_data[str(interaction.guild.id)]:
-        if not member.guild_permissions.manage_messages:
-          blacklist_data[str(interaction.guild.id)][str(member.id)] = {}
-          await interaction.response.send_message("Member blacklisted!", ephemeral=True)
+    if not member.id == interaction.user.id:
+        with open("blacklist.json", 'r') as f:
+            try:
+                blacklist_data = json.load(f)
+            except json.JSONDecodeError:
+                blacklist_data = {}
+
+        if str(interaction.guild.id) in blacklist_data:
+            if not str(member.id) in blacklist_data[str(interaction.guild.id)]:
+                if not member.guild_permissions.manage_messages:
+                    blacklist_data[str(interaction.guild.id)][str(member.id)] = {}
+                    await interaction.response.send_message("Member blacklisted!", ephemeral=True)
+                else:
+                    return await interaction.response.send_message("That member is a mod!", ephemeral=True)
+            else:
+                return await interaction.response.send_message("That member is already blacklisted!", ephemeral=True)
         else:
-          return await interaction.response.send_message("That member is a mod!", ephemeral=True)
-      else:
-        return await interaction.response.send_message("That member is already blacklisted!", ephemeral=True)
+            if not member.guild_permissions.manage_messages:
+                blacklist_data[str(interaction.guild.id)] = {}
+                blacklist_data[str(interaction.guild.id)][str(member.id)] = {}
+                await interaction.response.send_message("Member blacklisted!", ephemeral=True)
+            else:
+                return await interaction.response.send_message("That member is a mod!", ephemeral=True)
     else:
-      if not member.guild_permissions.manage_messages:
-        blacklist_data[str(interaction.guild.id)] = {}
-        blacklist_data[str(interaction.guild.id)][str(member.id)] = {}
-        await interaction.response.send_message("Member blacklisted!", ephemeral=True)
-      else:
-        return await interaction.response.send_message("That member is a mod!", ephemeral=True)
-  else:
-    return await interaction.response.send_message("You can't blacklist yourself!", ephemeral=True)
-  with open('blacklist.json', 'w') as f:
-    json.dump(blacklist_data, f)
+        return await interaction.response.send_message("You can't blacklist yourself!", ephemeral=True)
+
+    with open('blacklist.json', 'w') as f:
+        json.dump(blacklist_data, f, indent=2)
+
 
 @tree.command(name="whitelist", description="Whitelist a member(unblacklist)")
 @app_commands.checks.has_permissions(manage_messages=True)
 @app_commands.describe(member="The member to whitelist")
 async def whitelist(interaction: discord.Interaction, member: discord.Member):
-  if not member.id == interaction.user.id:
-    with open("blacklist.json", 'r') as f:
-      blacklist_data = json.load(f)
-    if str(interaction.guild.id) in blacklist_data:
-      if str(member.id) in blacklist_data[str(interaction.guild.id)]:
-        del blacklist_data[str(interaction.guild.id)][str(member.id)]
-        await interaction.response.send_message("Member whitelisted!", ephemeral=True)
-      else:
-        return await interaction.response.send_message("That member is not blacklisted!", ephemeral=True)
+    if not member.id == interaction.user.id:
+        with open("blacklist.json", 'r') as f:
+            try:
+                blacklist_data = json.load(f)
+            except json.JSONDecodeError:
+                blacklist_data = {}
+
+        if str(interaction.guild.id) in blacklist_data:
+            if str(member.id) in blacklist_data[str(interaction.guild.id)]:
+                del blacklist_data[str(interaction.guild.id)][str(member.id)]
+                await interaction.response.send_message("Member whitelisted!", ephemeral=True)
+            else:
+                return await interaction.response.send_message("That member is not blacklisted!", ephemeral=True)
+        else:
+            return await interaction.response.send_message("No one is blacklisted in your server!", ephemeral=True)
     else:
-      return await interaction.response.send_message("No one is blacklisted in your server!", ephemeral=True)
-  else:
-    return await interaction.response.send_message("You can't whitelist yourself!", ephemeral=True)
-  with open('blacklist.json', 'w') as f:
-    json.dump(blacklist_data, f)
+        return await interaction.response.send_message("You can't whitelist yourself!", ephemeral=True)
+
+    with open('blacklist.json', 'w') as f:
+        json.dump(blacklist_data, f, indent=2)
+
 
 @tree.command(name="createinteractive", description="Add a interactive VC to make a VC for a certain member")
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.describe(channel="The channel to interact with")
 async def create_interactive_vc(interaction: discord.Interaction, channel: discord.VoiceChannel):
-  try:
-    with open('music_voice_channels.json', 'r') as f:
-      data = json.load(f)
-    
-    if not str(interaction.guild.id) in data:
-      channel_list = []
-      channel_list.append(channel.id)
-      data[str(interaction.guild.id)] = {}
-      data[str(interaction.guild.id)]['channels'] = {}
-      data[str(interaction.guild.id)]['channels'] = channel_list
-    else:
-      channel_list = list(data[str(interaction.guild.id)]['channels'])
-      channel_list.append(channel.id)
-      data[str(interaction.guild.id)]['channels'] = channel_list
+    try:
+        with open('music_voice_channels.json', 'r') as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = {}
 
-    with open('music_voice_channels.json', 'w') as f:
-      json.dump(data, f, indent=2)
-    
-    await interaction.response.send_message("Channel set!", ephemeral=True)
-  except Exception as e:
-    raise e
+        if not str(interaction.guild.id) in data:
+            channel_list = []
+            channel_list.append(channel.id)
+            data[str(interaction.guild.id)] = {}
+            data[str(interaction.guild.id)]['channels'] = {}
+            data[str(interaction.guild.id)]['channels'] = channel_list
+        else:
+            channel_list = list(data[str(interaction.guild.id)]['channels'])
+            channel_list.append(channel.id)
+            data[str(interaction.guild.id)]['channels'] = channel_list
+
+        with open('music_voice_channels.json', 'w') as f:
+            json.dump(data, f, indent=2)
+
+        await interaction.response.send_message("Channel set!", ephemeral=True)
+    except Exception as e:
+        raise e
+
 
 @tree.command(name="removeinteractive", description="remove a interactive VC")
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.describe(channel="The channel to remove interaction with")
 async def remove_interactive_vc(interaction: discord.Interaction, channel: discord.VoiceChannel):
-  try:
-    with open('music_voice_channels.json', 'r') as f:
-      data = json.load(f)
-    
-    if not str(interaction.guild.id) in data:
-      return await interaction.response.send_message("No interactive VC found!", ephemeral=True)
-    else:
-      channel_list = list(data[str(interaction.guild.id)]['channels'])
-      channel_list.remove(channel.id)
-      data[str(interaction.guild.id)]['channels'] = channel_list
-      if len(channel_list) == 0:
-        del data[str(interaction.guild.id)]
+    try:
+        with open('music_voice_channels.json', 'r') as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = {}
 
-    with open('music_voice_channels.json', 'w') as f:
-      json.dump(data, f, indent=2)
-    
-    await interaction.response.send_message("Channel removed!", ephemeral=True)
-  except Exception as e:
-    raise e
+        if not str(interaction.guild.id) in data:
+            return await interaction.response.send_message("No interactive VC found!", ephemeral=True)
+        else:
+            channel_list = list(data[str(interaction.guild.id)]['channels'])
+            channel_list.remove(channel.id)
+            data[str(interaction.guild.id)]['channels'] = channel_list
+            if len(channel_list) == 0:
+                del data[str(interaction.guild.id)]
+
+        with open('music_voice_channels.json', 'w') as f:
+            json.dump(data, f, indent=2)
+
+        await interaction.response.send_message("Channel removed!", ephemeral=True)
+    except Exception as e:
+        raise e
+
+
+# ---------- Unlimited album users management ----------
+
+@tree.command(name="addunlimiteduser", description="Allow a user unlimited albums/songs (DEV ONLY)")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(member="The member to grant unlimited album capacity")
+async def add_unlimited_user(interaction: discord.Interaction, member: discord.Member):
+    if (not isUserDeveloper(interaction.user.id)): return
+    global UNLIMITED_ALBUM_USERS
+    if member.id not in UNLIMITED_ALBUM_USERS:
+        UNLIMITED_ALBUM_USERS.append(member.id)
+        save_unlimited_users(UNLIMITED_ALBUM_USERS)
+        await interaction.response.send_message(
+            f"✅ {member.mention} now has unlimited album capacity.",
+            ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"{member.mention} already has unlimited album capacity.",
+            ephemeral=True
+        )
+
+
+@tree.command(name="removeunlimiteduser", description="Revoke unlimited albums/songs from a user")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(member="The member to revoke unlimited album capacity from")
+async def remove_unlimited_user(interaction: discord.Interaction, member: discord.Member):
+    if (not isUserDeveloper(interaction.user.id)): return
+    global UNLIMITED_ALBUM_USERS
+    if member.id in UNLIMITED_ALBUM_USERS:
+        UNLIMITED_ALBUM_USERS.remove(member.id)
+        save_unlimited_users(UNLIMITED_ALBUM_USERS)
+        await interaction.response.send_message(
+            f"✅ {member.mention} no longer has unlimited album capacity.",
+            ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"{member.mention} does not have unlimited album capacity.",
+            ephemeral=True
+        )
+
+
+@tree.command(name="listunlimitedusers", description="List users with unlimited album capacity")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def list_unlimited_users(interaction: discord.Interaction):
+    if (not isUserDeveloper(interaction.user.id)): return
+    if not UNLIMITED_ALBUM_USERS:
+        return await interaction.response.send_message(
+            "No users currently have unlimited album capacity.",
+            ephemeral=True
+        )
+    mentions = []
+    for uid in UNLIMITED_ALBUM_USERS:
+        member = interaction.guild.get_member(uid)
+        mentions.append(member.mention if member else f"`{uid}`")
+    await interaction.response.send_message(
+        "Users with unlimited album capacity:\n" + "\n".join(mentions),
+        ephemeral=True
+    )
+
+
+# ---------- Album commands ----------
+
+@tree.command(name="savealbum", description="Save the currently playing song to one of your albums")
+@app_commands.describe(album_name="The album to save this song into")
+async def save_album_command(interaction: discord.Interaction, album_name: str):
+    player: pomice.Player = interaction.guild.voice_client
+    if player is None or not player.is_playing or not player.current:
+        return await interaction.response.send_message(
+            "Nothing is playing to save.", ephemeral=True
+        )
+
+    album_name = album_name.strip()
+    if not album_name:
+        return await interaction.response.send_message(
+            "Album name cannot be empty.", ephemeral=True
+        )
+
+    albums = load_albums()
+    user_id = str(interaction.user.id)
+
+    if user_id not in albums:
+        albums[user_id] = {}
+
+    user_albums = albums[user_id]
+
+    if album_name not in user_albums and not user_has_unlimited(interaction.user.id):
+        if len(user_albums) >= MAX_ALBUMS_PER_USER:
+            return await interaction.response.send_message(
+                f"You can only have {MAX_ALBUMS_PER_USER} albums.",
+                ephemeral=True
+            )
+
+    track = player.current
+    track_data = {
+        "title": track.title,
+        "uri": getattr(track, "uri", None),
+        "author": getattr(track, "author", None),
+        "length": getattr(track, "length", None)
+    }
+
+    if album_name not in user_albums:
+        user_albums[album_name] = []
+
+    # Enforce max songs per album
+    if not user_has_unlimited(interaction.user.id) and len(user_albums[album_name]) >= MAX_SONGS_PER_ALBUM:
+        return await interaction.response.send_message(
+            f"Album `{album_name}` already has {MAX_SONGS_PER_ALBUM} songs.",
+            ephemeral=True
+        )
+
+    for t in user_albums[album_name]:
+        if t.get("uri") == track_data["uri"] and t.get("title") == track_data["title"]:
+            return await interaction.response.send_message(
+                f"That track is already in `{album_name}`.",
+                ephemeral=True
+            )
+
+    user_albums[album_name].append(track_data)
+    save_albums(albums)
+
+    await interaction.response.send_message(
+        f"💾 Saved **{truncate_text(track.title, 80)}** to album `{album_name}`.",
+        ephemeral=True
+    )
+
+
+@tree.command(name="listalbums", description="List your albums and how many songs they have")
+async def list_albums_command(interaction: discord.Interaction):
+    albums = load_albums()
+    user_id = str(interaction.user.id)
+
+    if user_id not in albums or not albums[user_id]:
+        return await interaction.response.send_message(
+            "You have no albums yet. Use `/savealbum` while something is playing.",
+            ephemeral=True
+        )
+
+    desc_lines = []
+    for name, tracks in albums[user_id].items():
+        desc_lines.append(f"`{name}` - {len(tracks)} song(s)")
+
+    embed = discord.Embed(
+        title="Your Albums",
+        description="\n".join(desc_lines),
+        color=discord.Color.blue()
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="playalbum", description="Play one of your saved albums")
+@app_commands.describe(album_name="The album to play")
+async def play_album_command(interaction: discord.Interaction, album_name: str):
+    if not interaction.user.voice:
+        return await interaction.response.send_message(
+            "Join a voice channel first!", ephemeral=True
+        )
+
+    albums = load_albums()
+    user_id = str(interaction.user.id)
+    album_name = album_name.strip()
+
+    if user_id not in albums or album_name not in albums[user_id]:
+        return await interaction.response.send_message(
+            f"You don't have an album called `{album_name}`.",
+            ephemeral=True
+        )
+
+    album_tracks = albums[user_id][album_name]
+    if not album_tracks:
+        return await interaction.response.send_message(
+            f"Album `{album_name}` is empty.",
+            ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    player: pomice.Player = interaction.guild.voice_client
+    if not player:
+        player_check = interaction.guild.voice_client
+        if player_check is not None and player_check.is_connected():
+            return await interaction.followup.send(
+                "Bot is already in a voice channel! Use /fuckoff to disconnect me!",
+                ephemeral=True
+            )
+        player = await interaction.user.voice.channel.connect(cls=pomice.Player)
+        player.custom_queue = []
+        player.loop = False
+        player.dashboard_channel_id = interaction.channel.id
+        player.recent_activities = deque(maxlen=10)
+        await interaction.guild.change_voice_state(
+            channel=interaction.user.voice.channel, self_deaf=True
+        )
+
+    added_count = 0
+    for stored in album_tracks:
+        query = stored.get("uri") or stored.get("title")
+        if not query:
+            continue
+
+        try:
+            results = await player.get_tracks(query)
+        except Exception:
+            continue
+
+        if not results:
+            continue
+
+        if isinstance(results, pomice.Playlist):
+            track = results.tracks[0]
+        else:
+            track = results[0]
+
+        if not player.is_playing and not getattr(player, "custom_queue", []):
+            await player.play(track)
+            player.current_requester = interaction.user.display_name
+        else:
+            if not hasattr(player, "custom_queue"):
+                player.custom_queue = []
+            player.custom_queue.append(track)
+
+        added_count += 1
+
+    if added_count == 0:
+        return await interaction.followup.send(
+            f"Could not load any tracks from `{album_name}` (they may be unavailable).",
+            ephemeral=True
+        )
+
+    add_activity(player, f"📀 **{interaction.user.display_name}** played album `{album_name}`")
+    player.interaction = interaction
+    await update_dashboard(player)
+
+    await interaction.followup.send(
+        f"📀 Queued **{added_count}** track(s) from album `{album_name}`.",
+        ephemeral=True
+    )
+
+
+@tree.command(name="deletealbum", description="Delete one of your albums")
+@app_commands.describe(album_name="The album to delete")
+async def delete_album_command(interaction: discord.Interaction, album_name: str):
+    albums = load_albums()
+    user_id = str(interaction.user.id)
+    album_name = album_name.strip()
+
+    if user_id not in albums or album_name not in albums[user_id]:
+        return await interaction.response.send_message(
+            f"You don't have an album called `{album_name}`.",
+            ephemeral=True
+        )
+
+    del albums[user_id][album_name]
+    if not albums[user_id]:
+        del albums[user_id]
+    save_albums(albums)
+
+    await interaction.response.send_message(
+        f"🗑️ Deleted album `{album_name}`.",
+        ephemeral=True
+    )
+
 
 load_dotenv()
-
 token = os.getenv('token')
 client.run(token)
