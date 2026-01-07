@@ -808,6 +808,7 @@ async def search_command(interaction: discord.Interaction, search: str):
             self.choice = None
             await self.disable_all()
             await interaction_.response.send_message("Search cancelled.", ephemeral=True)
+            await message.delete()
             self.stop()
 
     description = "\n".join(
@@ -1033,7 +1034,7 @@ async def votekick_command(interaction: discord.Interaction, member: discord.Mem
         embed = await comp_embed(None, f"Vote to kick `{member.display_name}`", author_name=interaction.user.display_name, author_avatar_url=interaction.user.display_avatar.url, footer=f"Current people voted to kick: 0/{maximum_vote_threshold}")
         await interaction.response.send_message(embed=embed, view=voteView(channel=interaction.user.voice.channel, embed=embed))
     else:
-        return await interaction.response.send_message(f"You can't vote kick because the member count is not {maximum_vote_threshold} in your current voice channel!")
+        return await interaction.response.send_message(f"You can't vote kick because the member count is not {maximum_vote_threshold} in your current voice channel!", ephemeral=True)
 
 #!!!!!!!!!!!!!!!!!!!#
 #!Function commands!#
