@@ -317,7 +317,7 @@ async def update_dashboard(player: pomice.Player, force_new=False):
         track = player.current
         duration = await convert(int(track.length), auto_format=False)
         position = await convert(int(player.position), auto_format=False)
-        requester = getattr(player, 'current_requester', 'Unknown')
+        requester = getattr(player.current, 'requester', 'Unknown') if player.current else 'Unknown'
         track_title = truncate_text(track.title, 80)
         track_author = truncate_text(track.author or "Unknown", 50)
         status_title = (
@@ -617,11 +617,12 @@ async def play_command(interaction: discord.Interaction, search: str):
         requester_name = interaction.user.display_name
 
         if not player.is_playing and not player.custom_queue:
+            song.requester = requester_name
             await player.play(song)
-            player.current_requester = requester_name
             add_activity(player, f"🎵 **{interaction.user.display_name}** added **{truncate_text(song.title, 40)}**")
             response = f"▶️ Now playing: **{truncate_text(song.title, 60)}**"
         else:
+            song.requester = requester_name
             player.custom_queue.append(song)
             add_activity(player, f"➕ **{interaction.user.display_name}** queued **{truncate_text(song.title, 40)}**")
             response = f"➕ Added to queue: **{truncate_text(song.title, 60)}**"
@@ -885,7 +886,7 @@ async def nowplaying_command(interaction: discord.Interaction):
         return await interaction.response.send_message("Bot is not connected to any voice channel", ephemeral=True)
     if player.is_playing:
         track = player.current
-        requester = getattr(player, 'current_requester', 'Unknown')
+        requester = getattr(player.current, 'requester', 'Unknown')
         duration = await convert(int(track.length), auto_format=False)
         embed = discord.Embed(
             title=f"🎵 Now Playing",
@@ -1008,7 +1009,7 @@ async def search_command(interaction: discord.Interaction, search: str):
 
     if not player.is_playing and not player.is_paused:
         await player.play(chosen)
-        player.current_requester = requester_name
+        chosen.requester = requester_name
         add_activity(player, f"🎵 **{requester_name}** added **{truncate_text(chosen.title, 40)}**")
         response = f"▶️ Now playing: **{truncate_text(chosen.title, 60)}**"
     else:
@@ -1482,7 +1483,7 @@ async def save_album_command(interaction: discord.Interaction, album_name: str):
     )
 
 
-@tree.command(name="listalbums", description="List your albums and how many songs they have")
+@tree.command(name="listalbums", description="List your albums and their songs")
 async def list_albums_command(interaction: discord.Interaction):
     albums = load_albums()
     user_id = str(interaction.user.id)
@@ -1493,16 +1494,40 @@ async def list_albums_command(interaction: discord.Interaction):
             ephemeral=True
         )
 
-    desc_lines = []
-    for name, tracks in albums[user_id].items():
-        desc_lines.append(f"`{name}` - {len(tracks)} song(s)")
+    user_albums = albums[user_id]
 
     embed = discord.Embed(
         title="Your Albums",
-        description="\n".join(desc_lines),
+        description="",
         color=discord.Color.blue()
     )
+
+    for album_name, tracks in user_albums.items():
+        if not tracks:
+            value = "_(empty)_"
+        else:
+            lines = []
+            for idx, t in enumerate(tracks, start=1):
+                title = t.get("title") or "Unknown title"
+                author = t.get("author") or "Unknown artist"
+                line = f"`{idx}.` **{truncate_text(title, 60)}** – {truncate_text(author, 40)}"
+                lines.append(line)
+                if sum(len(x) + 1 for x in lines) > 1000:
+                    lines.append("...and more")
+                    break
+            value = "\n".join(lines)
+
+        embed.add_field(
+            name=f"{album_name} ({len(tracks)} song(s))",
+            value=value,
+            inline=False
+        )
+
+        if len(embed.fields) >= 25:
+            break
+
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 
 @tree.command(name="playalbum", description="Play one of your saved albums")
@@ -1568,9 +1593,10 @@ async def play_album_command(interaction: discord.Interaction, album_name: str):
         else:
             track = results[0]
 
+        track.requester = interaction.user.display_name
+
         if not player.is_playing and not getattr(player, "custom_queue", []):
             await player.play(track)
-            player.current_requester = interaction.user.display_name
         else:
             if not hasattr(player, "custom_queue"):
                 player.custom_queue = []
