@@ -637,6 +637,7 @@ async def play_command(interaction: discord.Interaction, search: str):
 
 
 @tree.command(name="clear", description="Stop the current song and clear the queue")
+@app_commands.checks.has_permissions(manage_messages=True)
 async def clear_command(interaction: discord.Interaction):
     try:
         with open('blacklist.json', 'r') as f:
@@ -840,6 +841,7 @@ async def queue_command(interaction: discord.Interaction):
 
 @tree.command(name="removesonginqueue", description="Removes a song in the queue")
 @app_commands.describe(position="The position of the song in the queue")
+@app_commands.checks.has_permissions(manage_messages=True)
 async def removeSongInQueue_command(interaction: discord.Interaction, position: int):
     with open('blacklist.json', 'r') as f:
         try:
