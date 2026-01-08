@@ -599,6 +599,7 @@ async def play_command(interaction: discord.Interaction, search: str):
             player.dashboard_channel_id = interaction.channel.id
             player.recent_activities = deque(maxlen=10)
             await interaction.guild.change_voice_state(channel=interaction.user.voice.channel, self_deaf=True)
+            update_dashboard()
 
         results = await player.get_tracks(search)
         if not results:
@@ -927,6 +928,7 @@ async def search_command(interaction: discord.Interaction, search: str):
         player.dashboard_channel_id = interaction.channel.id
         player.recent_activities = deque(maxlen=10)
         await interaction.guild.change_voice_state(channel=interaction.user.voice.channel, self_deaf=True)
+        update_dashboard()
 
     tracks = await player.get_tracks(search)
     if not tracks:
@@ -1573,6 +1575,7 @@ async def play_album_command(interaction: discord.Interaction, album_name: str):
         await interaction.guild.change_voice_state(
             channel=interaction.user.voice.channel, self_deaf=True
         )
+        update_dashboard()
 
     added_count = 0
     for stored in album_tracks:
