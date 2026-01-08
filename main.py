@@ -10,6 +10,7 @@ from collections import deque
 from datetime import datetime
 
 test_server = 1005623551962918933
+rate_limited_until = 0
 
 DEVELOPERS = [
     782448408979832892
@@ -79,14 +80,30 @@ def user_has_unlimited(user_id: int) -> bool:
     return int(user_id) in UNLIMITED_ALBUM_USERS
 
 
-@tasks.loop(seconds=5)
+@tasks.loop(seconds=10)
 async def dashboard_updater():
+    global rate_limited_until
+    now = datetime.now().timestamp()
+
+    if now < rate_limited_until:
+        return
+
     for guild in client.guilds:
         player: pomice.Player = guild.voice_client
         if not player:
             continue
         if player.is_connected and player.is_playing:
-            await update_dashboard(player)
+            try:
+                await update_dashboard(player)
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    rate_limited_until = datetime.now().timestamp() + 60
+                    print("Hit rate limit in dashboard_updater, backing off 60s")
+                    return
+                else:
+                    print(f"HTTP error in dashboard_updater: {e}")
+            except Exception as e:
+                print(f"Error in dashboard_updater: {e}")
 
 
 class discordClient(commands.Bot):
