@@ -1509,15 +1509,19 @@ async def list_albums_command(interaction: discord.Interaction):
             value = "_(empty)_"
         else:
             lines = []
-            for idx, t in enumerate(tracks, start=1):
-                title = t.get("title") or "Unknown title"
-                author = t.get("author") or "Unknown artist"
-                line = f"`{idx}.` **{truncate_text(title, 60)}** – {truncate_text(author, 40)}"
+            for idx, t in enumerate(tracks[:10], start=1):
+                title = t.get("title", "Unknown title")
+                author = t.get("author", "Unknown artist")
+                line = f"`{idx}.` **{truncate_text(title, 50)}** – {truncate_text(author, 30)}"
                 lines.append(line)
-                if sum(len(x) + 1 for x in lines) > 1000:
-                    lines.append("...and more")
+
+                if sum(len(line) + 1 for line in lines) > 900:
+                    lines.append("*...and more*")
                     break
+            
             value = "\n".join(lines)
+            if len(value) > 1024:
+                value = value[:1021] + "..."
 
         embed.add_field(
             name=f"{album_name} ({len(tracks)} song(s))",
@@ -1526,9 +1530,11 @@ async def list_albums_command(interaction: discord.Interaction):
         )
 
         if len(embed.fields) >= 25:
+            embed.description += "\n*(Too many albums to show completely)*"
             break
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 
 
