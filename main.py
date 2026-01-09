@@ -2,6 +2,7 @@ import discord
 import os
 import json
 import pomice
+import random
 from discord.ext import tasks
 from discord import app_commands
 from discord.ext import commands
@@ -9,7 +10,7 @@ from dotenv import load_dotenv
 from collections import deque
 from datetime import datetime
 
-test_server = 1005623551962918933
+test_server = 1349547041784594452
 rate_limited_until = 0
 
 DEVELOPERS = [
@@ -1512,56 +1513,109 @@ async def list_albums_command(interaction: discord.Interaction, page: int = 1):
             ephemeral=True
         )
 
-    user_albums = list(albums[user_id].items())
-    pages = (len(user_albums) + 4) // 5
-    page = max(1, min(page, pages))
-
+    all_items = []
+    for album_name, tracks in albums[user_id].items():
+        for j, track in enumerate(tracks):
+            all_items.append({
+                'album': album_name,
+                'position': j + 1,
+                'track': track
+            })
+    
+    if not all_items:
+        return await interaction.response.send_message(
+            "Your albums are all empty. Use `/addtoalbum` while a song is playing.",
+            ephemeral=True
+        )
+    
+    items_per_page = 20
+    total_pages = (len(all_items) + items_per_page - 1) // items_per_page
+    page = max(1, min(page, total_pages))
+    
     embed = discord.Embed(
-        title=f"Your Albums - Page {page}/{pages}",
+        title=f"📁 Your Album Collection - Page {page}/{total_pages}",
+        description=f"Total: {len(all_items)} songs across {len(albums[user_id])} albums",
         color=discord.Color.blue()
     )
-
-    start_idx = (page - 1) * 5
-    end_idx = min(start_idx + 5, len(user_albums))
     
-    for i, (album_name, tracks) in enumerate(user_albums[start_idx:end_idx], start=start_idx + 1):
-        if not tracks:
-            value = "_(empty)_"
-        else:
-            lines = []
-            total_chars = 0
-            songs_shown = 0
+    start_idx = (page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, len(all_items))
+    
+    current_album = None
+    album_songs = []
+    
+    for item in all_items[start_idx:end_idx]:
+        if current_album != item['album']:
+            if current_album is not None and album_songs:
+                value = "\n".join(album_songs)
+                embed.add_field(
+                    name=f"📀 {truncate_text(current_album, 230)}",
+                    value=value[:1024],
+                    inline=False
+                )
             
-            for j, t in enumerate(tracks):
-                song_line = f"`{j+1}.` **{truncate_text(t.get('title', 'Unknown'), 45)}**\n"
-                line_length = len(song_line)
-                
-                if total_chars + line_length + 30 > 1024:
-                    break
-                
-                lines.append(song_line.rstrip('\n'))
-                total_chars += line_length
-                songs_shown += 1
-            
-            value = "\n".join(lines)
-            
-            if songs_shown < len(tracks):
-                remaining = len(tracks) - songs_shown
-                value += f"\n*...and {remaining} more*"
-        
-        field_name = f"{i}. {truncate_text(album_name, 230)} ({len(tracks)} songs)"
-        
+            current_album = item['album']
+            album_songs = []
+    
+        song_title = truncate_text(item['track'].get('title', 'Unknown'), 50)
+        album_songs.append(f"`{item['position']}.` **{song_title}**")
+    
+    if current_album is not None and album_songs:
+        value = "\n".join(album_songs)
         embed.add_field(
-            name=field_name,
-            value=value or "_(empty)_",
+            name=f"📀 {truncate_text(current_album, 230)}",
+            value=value[:1024],
             inline=False
         )
-
-    embed.set_footer(text=f"Page {page}/{pages} | Use /listalbums page:<number>")
+    
+    embed.set_footer(text=f"Page {page}/{total_pages} | Showing songs {start_idx + 1}-{end_idx} of {len(all_items)}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-
+@tree.command(name="shuffle", description="Shuffle the queue")
+async def shuffle_command(interaction: discord.Interaction):
+    with open('blacklist.json', 'r') as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            data = {}
+    
+    if str(interaction.guild.id) in data:
+        if str(interaction.user.id) in data[str(interaction.guild.id)]:
+            blacklisted = True
+        else:
+            blacklisted = False
+    else:
+        blacklisted = False
+    
+    if blacklisted:
+        return await interaction.response.send_message(
+            f"You are blacklisted in {interaction.guild.name}! You can't shuffle the queue!",
+            ephemeral=True
+        )
+    
+    player: pomice.Player = interaction.guild.voice_client
+    
+    if not player or not player.is_connected:
+        return await interaction.response.send_message(
+            "I'm not in a voice channel!",
+            ephemeral=True
+        )
+    
+    if not hasattr(player, 'custom_queue') or not player.custom_queue:
+        return await interaction.response.send_message(
+            "Queue is empty, nothing to shuffle!",
+            ephemeral=True
+        )
+    
+    random.shuffle(player.custom_queue)
+    
+    add_activity(player, f"🔀 **{interaction.user.display_name}** shuffled the queue")
+    await update_dashboard(player)
+    
+    await interaction.response.send_message(
+        f"🔀 Shuffled **{len(player.custom_queue)}** songs in the queue!",
+        ephemeral=True
+    )
 
 @tree.command(name="playalbum", description="Play one of your saved albums")
 @app_commands.describe(album_name="The album to play")
