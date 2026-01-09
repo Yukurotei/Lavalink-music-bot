@@ -821,24 +821,39 @@ async def loop_command(interaction: discord.Interaction):
 
 
 @tree.command(name="queue", description="Check the queue")
-async def queue_command(interaction: discord.Interaction):
+@app_commands.describe(page="Page number (default: 1)")
+async def queue_command(interaction: discord.Interaction, page: int = 1):
     if not interaction.guild.voice_client:
         return await interaction.response.send_message("I'm not in a voice channel!", ephemeral=True)
     elif not interaction.user.voice:
         return await interaction.response.send_message("You are not in a voice channel!", ephemeral=True)
-    else:
-        player: pomice.Player = interaction.guild.voice_client
-        if await isQueueEmpty(player):
-            return await interaction.response.send_message("Queue is empty", ephemeral=True)
 
-        embed = discord.Embed(title="Queue", description=f"Current song: {player.current.title}",
-                              color=discord.Color.blue())
-        queue = player.custom_queue
-        song_count = 0
-        for song in queue:
-            song_count += 1
-            embed.add_field(name=f"Song {song_count}", value=f"`{truncate_text(song.title, 80)}`", inline=False)
-        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    player: pomice.Player = interaction.guild.voice_client
+    if await isQueueEmpty(player):
+        return await interaction.response.send_message("Queue is empty", ephemeral=True)
+
+    queue = player.custom_queue
+    total_pages = (len(queue) + 9) // 10
+    page = max(1, min(page, total_pages))
+
+    embed = discord.Embed(
+        title=f"Queue - Page {page}/{total_pages}",
+        description=f"**Now playing:** {truncate_text(player.current.title, 80)}",
+        color=discord.Color.blue()
+    )
+
+    start_idx = (page - 1) * 10
+    end_idx = min(start_idx + 10, len(queue))
+    
+    for i, track in enumerate(queue[start_idx:end_idx], start=start_idx + 1):
+        embed.add_field(
+            name=f"{i}. {truncate_text(track.title, 60)}",
+            value=truncate_text(track.author or "Unknown", 50),
+            inline=False
+        )
+
+    embed.set_footer(text=f"Total: {len(queue)} songs | Page {page}/{total_pages}")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @tree.command(name="removesonginqueue", description="Removes a song in the queue")
@@ -1486,7 +1501,8 @@ async def save_album_command(interaction: discord.Interaction, album_name: str):
 
 
 @tree.command(name="listalbums", description="List your albums and their songs")
-async def list_albums_command(interaction: discord.Interaction):
+@app_commands.describe(page="Page number (default: 1)")
+async def list_albums_command(interaction: discord.Interaction, page: int = 1):
     albums = load_albums()
     user_id = str(interaction.user.id)
 
@@ -1496,43 +1512,33 @@ async def list_albums_command(interaction: discord.Interaction):
             ephemeral=True
         )
 
-    user_albums = albums[user_id]
+    user_albums = list(albums[user_id].items())
+    pages = (len(user_albums) + 4) // 5
+    page = max(1, min(page, pages))
 
     embed = discord.Embed(
-        title="Your Albums",
-        description="",
+        title=f"Your Albums - Page {page}/{pages}",
         color=discord.Color.blue()
     )
 
-    for album_name, tracks in user_albums.items():
+    start_idx = (page - 1) * 5
+    end_idx = min(start_idx + 5, len(user_albums))
+    
+    for i, (album_name, tracks) in enumerate(user_albums[start_idx:end_idx], start=start_idx + 1):
         if not tracks:
             value = "_(empty)_"
         else:
-            lines = []
-            for idx, t in enumerate(tracks[:10], start=1):
-                title = t.get("title", "Unknown title")
-                author = t.get("author", "Unknown artist")
-                line = f"`{idx}.` **{truncate_text(title, 50)}** – {truncate_text(author, 30)}"
-                lines.append(line)
-
-                if sum(len(line) + 1 for line in lines) > 900:
-                    lines.append("*...and more*")
-                    break
-            
-            value = "\n".join(lines)
-            if len(value) > 1024:
-                value = value[:1021] + "..."
-
+            lines = [f"`{j+1}.` **{truncate_text(t.get('title', 'Unknown'), 45)}**" 
+                    for j, t in enumerate(tracks[:6])]
+            value = "\n".join(lines)[:1020] + "..." if len("\n".join(lines)) > 1020 else "\n".join(lines)
+        
         embed.add_field(
-            name=f"{album_name} ({len(tracks)} song(s))",
-            value=value,
+            name=f"{i}. {album_name} ({len(tracks)} songs)",
+            value=value or "_(empty)_",
             inline=False
         )
 
-        if len(embed.fields) >= 25:
-            embed.description += "\n*(Too many albums to show completely)*"
-            break
-
+    embed.set_footer(text=f"Page {page}/{pages} | Use /listalbums page:<number>")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
