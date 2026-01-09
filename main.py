@@ -1508,7 +1508,7 @@ async def list_albums_command(interaction: discord.Interaction, page: int = 1):
 
     if user_id not in albums or not albums[user_id]:
         return await interaction.response.send_message(
-            "You have no albums yet. Use `/savealbum` while something is playing.",
+            "You have no albums yet. Use `/createalbum` to create one.",
             ephemeral=True
         )
 
@@ -1528,12 +1528,31 @@ async def list_albums_command(interaction: discord.Interaction, page: int = 1):
         if not tracks:
             value = "_(empty)_"
         else:
-            lines = [f"`{j+1}.` **{truncate_text(t.get('title', 'Unknown'), 45)}**" 
-                    for j, t in enumerate(tracks[:6])]
-            value = "\n".join(lines)[:1020] + "..." if len("\n".join(lines)) > 1020 else "\n".join(lines)
+            lines = []
+            total_chars = 0
+            songs_shown = 0
+            
+            for j, t in enumerate(tracks):
+                song_line = f"`{j+1}.` **{truncate_text(t.get('title', 'Unknown'), 45)}**\n"
+                line_length = len(song_line)
+                
+                if total_chars + line_length + 30 > 1024:
+                    break
+                
+                lines.append(song_line.rstrip('\n'))
+                total_chars += line_length
+                songs_shown += 1
+            
+            value = "\n".join(lines)
+            
+            if songs_shown < len(tracks):
+                remaining = len(tracks) - songs_shown
+                value += f"\n*...and {remaining} more*"
+        
+        field_name = f"{i}. {truncate_text(album_name, 230)} ({len(tracks)} songs)"
         
         embed.add_field(
-            name=f"{i}. {album_name} ({len(tracks)} songs)",
+            name=field_name,
             value=value or "_(empty)_",
             inline=False
         )
